@@ -2,150 +2,92 @@
 Main application file for the disease simulator.
 """
 
-import pygame
 import sys
-from map import Map
 from simulation import Simulation
-from disease import Influenza, COVID19, Measles, Ebola, Smallpox, CommonCold
+
 import config
+import city_data_loader # For loading city coordinates
+import cli_interface
+import stats_display # For displaying statistics
+import html_reporter # For generating HTML reports
+import time # For time.sleep
 
-# Initialize Pygame
-pygame.init()
+def main():
+    # Get simulation parameters from CLI
+    selected_disease = cli_interface.select_disease_cli()
+    start_location_data = cli_interface.get_starting_location_cli()
+    sim_control = cli_interface.get_simulation_control_cli()
 
-# Set up the display
-screen = pygame.display.set_mode((config.SCREEN_WIDTH, config.SCREEN_HEIGHT))
-pygame.display.set_caption("Disease Simulator")
+    # Initialize simulation
+    # Note: SCREEN_WIDTH and SCREEN_HEIGHT are removed from config.
+    # For now, pass dummy values or remove if not needed by Simulation constructor.
+    # Will need to verify Simulation constructor in simulation.py
+    simulation = Simulation(1280, 720, selected_disease) # Using dummy values for now
 
-# Font for UI
-ui_font = pygame.font.Font(None, 36)
+    # Handle starting location
+    if start_location_data['type'] == 'coordinates':
+        # Need to map these coordinates to a city or directly infect
+        # For now, directly infect at these coordinates
+        simulation.infect_location(start_location_data['x'], start_location_data['y'], radius=5)
+    elif start_location_data['type'] == 'city_name':
+        city_name = start_location_data['name']
+        # Use dummy screen dimensions for lookup as actual screen is not used
+        x, y, population = city_data_loader.get_city_coordinates(city_name, 1280, 720)
+        if x is not None and y is not None:
+            simulation.infect_location(x, y, radius=5)
+            print(f"Infection started in {city_name} at coordinates ({x}, {y}). Population: {population}")
+        else:
+            print(f"City '{city_name}' not found in data. Skipping initial infection.")
+        
 
-# Zoom buttons
-zoom_in_button = pygame.Rect(10, 100, 30, 30)
-zoom_out_button = pygame.Rect(50, 100, 30, 30)
+    print("\nStarting simulation...")
 
-# Load map and initialize population
-world_map = Map(screen, config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
+    running = True
+    infection_started = True # Assume infection starts immediately after setup
 
-# Disease selection
-def select_disease():
-    font = pygame.font.Font(None, 36)
-    diseases = {
-        "1": Influenza(),
-        "2": COVID19(),
-        "3": Measles(),
-        "4": Ebola(),
-        "5": Smallpox(),
-        "6": CommonCold()
-    }
-    selected_disease = None
+    # Simulation loop
+    while running:
+        # Update simulation (run 60 steps per simulated hour)
+        if infection_started:
+            for _ in range(60): # This loop runs 60 times per "frame" in old code, now per iteration
+                simulation.update()
 
-    while selected_disease is None:
-        screen.fill(config.BLACK)
-        text = font.render("Select a disease:", True, config.WHITE)
-        screen.blit(text, (config.SCREEN_WIDTH // 2 - text.get_width() // 2, 100))
+        # Display statistics (placeholder, will be replaced by stats_display.py)
+        total_seconds = simulation.seconds_elapsed
+        days = total_seconds // (24 * 3600)
+        hours = (total_seconds % (24 * 3600)) // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        
+        stats_display.display_stats(simulation)
 
-        y_offset = 150
-        for key, disease_obj in diseases.items():
-            text = font.render(f"{key}. {disease_obj.name}", True, config.WHITE)
-            screen.blit(text, (config.SCREEN_WIDTH // 2 - text.get_width() // 2, y_offset))
-            y_offset += 40
-
-        pygame.display.flip()
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-            if event.type == pygame.KEYDOWN:
-                if event.unicode in diseases:
-                    selected_disease = diseases[event.unicode]
-    return selected_disease
-
-selected_disease = select_disease()
-simulation = Simulation(config.SCREEN_WIDTH, config.SCREEN_HEIGHT, selected_disease)
-
-# Game loop
-running = True
-clock = pygame.time.Clock()
-
-# State variables
-infection_started = False
-panning = False
-
-while running:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
+        # Check termination conditions
+        if sim_control['type'] == 'infected_target' and simulation.total_infected >= sim_control['value']:
+            print(f"Simulation terminated: Target infected count ({sim_control['value']}) reached.")
             running = False
-        elif event.type == pygame.MOUSEWHEEL:
-            world_map.handle_zoom(event)
-        elif event.type == pygame.MOUSEBUTTONDOWN:
-            if event.button == 1:
-                if zoom_in_button.collidepoint(event.pos):
-                    world_map.zoom_in()
-                elif zoom_out_button.collidepoint(event.pos):
-                    world_map.zoom_out()
-                elif not infection_started:
-                    x, y = event.pos
-                    # Adjust coordinates based on zoom and pan
-                    map_x = int((x - world_map.map_offset_x) / world_map.zoom_level)
-                    map_y = int((y - world_map.map_offset_y) / world_map.zoom_level)
-                    if simulation.infect_location(map_x, map_y, radius=5):
-                        infection_started = True
-            elif event.button == 3: # Right mouse button
-                panning = True
-        elif event.type == pygame.MOUSEBUTTONUP:
-            if event.button == 3:
-                panning = False
-        elif event.type == pygame.MOUSEMOTION:
-            if panning:
-                world_map.handle_pan(event.rel)
+        elif sim_control['type'] == 'dead_target' and simulation.total_dead >= sim_control['value']:
+            print(f"Simulation terminated: Target dead count ({sim_control['value']}) reached.")
+            running = False
+        elif sim_control['type'] == 'recovered_target' and simulation.total_recovered >= sim_control['value']:
+            print(f"Simulation terminated: Target recovered count ({sim_control['value']}) reached.")
+            running = False
+        elif sim_control['type'] == 'day_target' and days >= sim_control['value']:
+            print(f"Simulation terminated: Target day ({sim_control['value']}) reached.")
+            running = False
+        # For indefinite, loop continues until Ctrl+C
 
+        # Small delay to make output readable, can be removed for faster simulation
+        time.sleep(0.01) 
 
-    # Update simulation (run 60 steps per frame to achieve 1 simulated hour per second)
-    if infection_started:
-        for _ in range(60):
-            simulation.update()
+    print("\nSimulation finished.")
+    # Generate detailed log (already handled by simulation.py)
+    html_reporter.generate_html_report(config.LOG_FILE, "simulation_report.html")
 
-    # Drawing
-    screen.fill(config.BLACK) # Clear screen before drawing
-    world_map.draw()
-    world_map.draw_infection(simulation.simulation_grid)
-    world_map.draw_air_travel(simulation.air_travel_lines)
-
-    # Display stats
-    font = pygame.font.Font(None, 24)
-    
-    total_seconds = simulation.seconds_elapsed
-    days = total_seconds // (24 * 3600)
-    hours = (total_seconds % (24 * 3600)) // 3600
-    minutes = (total_seconds % 3600) // 60
-    seconds = total_seconds % 60
-    time_text = f"Day: {days} {hours:02d}:{minutes:02d}:{seconds:02d}"
-
-    healthy_text = f"Healthy: {simulation.total_healthy}"
-    exposed_text = f"Exposed: {simulation.total_exposed}"
-    stats_text = f"Infected: {simulation.total_infected} | Dead: {simulation.total_dead} | Recovered: {simulation.total_recovered}"
-    
-    time_surface = font.render(time_text, True, config.GREEN)
-    healthy_surface = font.render(healthy_text, True, config.GREEN)
-    exposed_surface = font.render(exposed_text, True, config.GREEN)
-    stats_surface = font.render(stats_text, True, config.GREEN)
-    
-    screen.blit(time_surface, (10, 10))
-    screen.blit(healthy_surface, (10, 30))
-    screen.blit(exposed_surface, (10, 50))
-    screen.blit(stats_surface, (10, 70))
-
-    # Draw zoom buttons
-    pygame.draw.rect(screen, config.WHITE, zoom_in_button)
-    pygame.draw.rect(screen, config.WHITE, zoom_out_button)
-    plus_text = ui_font.render("+", True, config.BLACK)
-    minus_text = ui_font.render("-", True, config.BLACK)
-    screen.blit(plus_text, (zoom_in_button.x + 7, zoom_in_button.y + 2))
-    screen.blit(minus_text, (zoom_out_button.x + 9, zoom_out_button.y + 2))
-
-
-    pygame.display.flip()
-
-pygame.quit()
-sys.exit()
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nSimulation interrupted by user.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        sys.exit(1)
